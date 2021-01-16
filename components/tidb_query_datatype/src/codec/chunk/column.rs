@@ -32,7 +32,7 @@ pub struct Column {
     length: usize,
     null_cnt: usize,
     null_bitmap: Vec<u8>,
-    var_offsets: Vec<usize>,
+    var_offsets: Vec<u32>,
     data: Vec<u8>,
     // if the data's length is fixed, fixed_len should be bigger than 0
     fixed_len: usize,
@@ -416,7 +416,7 @@ impl Column {
     fn finished_append_var(&mut self) {
         self.append_null_bitmap(true);
         let offset = self.data.len();
-        self.var_offsets.push(offset);
+        self.var_offsets.push(offset as u32);
         self.length += 1;
     }
 
@@ -631,8 +631,8 @@ impl Column {
     /// Get the bytes datum of the row in the column.
     #[inline]
     pub fn get_bytes(&self, idx: usize) -> &[u8] {
-        let start = self.var_offsets[idx];
-        let end = self.var_offsets[idx + 1];
+        let start = self.var_offsets[idx] as usize;
+        let end = self.var_offsets[idx + 1] as usize;
         &self.data[start..end]
     }
 
@@ -820,8 +820,8 @@ impl Column {
     /// Get the json datum of the row in the column.
     #[inline]
     pub fn get_json(&self, idx: usize) -> Result<Json> {
-        let start = self.var_offsets[idx];
-        let end = self.var_offsets[idx + 1];
+        let start = self.var_offsets[idx] as usize;
+        let end = self.var_offsets[idx + 1] as usize;
         let mut data = &self.data[start..end];
         data.read_json()
     }
@@ -855,7 +855,7 @@ impl Column {
         } else {
             col.var_offsets.clear();
             for _ in 0..=length {
-                col.var_offsets.push(buf.read_i64_le()? as usize);
+                col.var_offsets.push(buf.read_i64_le()? as u32);
             }
             col.var_offsets[col.length]
         };
@@ -880,7 +880,7 @@ pub trait ChunkColumnEncoder: NumberEncoder {
         if !col.is_fixed() {
             //let length = (col.length+1)*4;
             for v in &col.var_offsets {
-                self.write_i64_le(*v as i64)?;
+                self.write_i32_le(*v as i32)?;
             }
         }
         // data
