@@ -11,7 +11,7 @@ use super::ScannerConfig;
 use crate::storage::{
     Cursor, Snapshot, Statistics,
     kv::SEEK_BOUND,
-    mvcc::{ErrorInner::WriteConflict, NewerTsCheckState, Result},
+    mvcc::{ErrorInner::WriteConflict, ErrorInner::Other, NewerTsCheckState, Result},
     txn::{Result as TxnResult, TxnEntry, TxnEntryScanner},
 };
 
@@ -46,6 +46,7 @@ pub trait ScanPolicy<S: Snapshot> {
     fn handle_write(
         &mut self,
         current_user_key: Key,
+        current_comit_ts: TimeStamp,
         cfg: &mut ScannerConfig<S>,
         cursors: &mut Cursors<S>,
         statistics: &mut Statistics,
@@ -116,6 +117,7 @@ impl<S: Snapshot> Cursors<S> {
     }
 }
 
+type MoveWriteCursorResult = (bool, TimeStamp);
 pub struct ForwardScanner<S: Snapshot, P: ScanPolicy<S>> {
     cfg: ScannerConfig<S>,
     cursors: Cursors<S>,
@@ -286,10 +288,11 @@ impl<S: Snapshot, P: ScanPolicy<S>> ForwardScanner<S, P> {
                 };
             }
             if has_write {
-                let is_current_user_key = self.move_write_cursor_to_ts(&current_user_key)?;
+                let (is_current_user_key, current_commit_ts) = self.move_write_cursor_to_ts(&current_user_key)?;
                 if is_current_user_key {
                     if let HandleRes::Return(output) = self.scan_policy.handle_write(
                         current_user_key,
+                        current_commit_ts,
                         &mut self.cfg,
                         &mut self.cursors,
                         &mut self.statistics,
@@ -308,7 +311,7 @@ impl<S: Snapshot, P: ScanPolicy<S>> ForwardScanner<S, P> {
     /// key. Because it is possible that the cursor is moved to the next user
     /// key or the end of key space, the method returns whether the write cursor
     /// still points to the given user key.
-    fn move_write_cursor_to_ts(&mut self, user_key: &Key) -> Result<bool> {
+    fn move_write_cursor_to_ts(&mut self, user_key: &Key) -> Result<MoveWriteCursorResult> {
         assert!(self.cursors.write.valid()?);
 
         // Try to iterate to `${user_key}_${ts}`. We first `next()` for a few times,
@@ -321,19 +324,19 @@ impl<S: Snapshot, P: ScanPolicy<S>> ForwardScanner<S, P> {
                 self.cursors.write.next(&mut self.statistics.write);
                 if !self.cursors.write.valid()? {
                     // Key space ended.
-                    return Ok(false);
+                    return Ok((false, TimeStamp::zero()));
                 }
             }
             {
                 let current_key = self.cursors.write.key(&mut self.statistics.write);
                 if !Key::is_user_key_eq(current_key, user_key.as_encoded().as_slice()) {
                     // Meet another key.
-                    return Ok(false);
+                    return Ok((false, TimeStamp::zero()));
                 }
                 let key_commit_ts = Key::decode_ts_from(current_key)?;
                 if key_commit_ts <= self.cfg.ts {
                     // Founded, don't need to seek again.
-                    return Ok(true);
+                    return Ok((true, key_commit_ts));
                 } else if self.met_newer_ts_data == NewerTsCheckState::NotMetYet {
                     self.met_newer_ts_data = NewerTsCheckState::Met;
                 }
@@ -365,22 +368,23 @@ impl<S: Snapshot, P: ScanPolicy<S>> ForwardScanner<S, P> {
         )?;
         if !self.cursors.write.valid()? {
             // Key space ended.
-            return Ok(false);
+            return Ok((false, TimeStamp::zero()));
         }
         let current_key = self.cursors.write.key(&mut self.statistics.write);
         if !Key::is_user_key_eq(current_key, user_key.as_encoded().as_slice()) {
             // Meet another key.
-            return Ok(false);
+            return Ok((false, TimeStamp::zero()));
         }
-        Ok(true)
+        let key_commit_ts = Key::decode_ts_from(current_key)?;
+        Ok((true, key_commit_ts))
     }
 }
 
 /// `ForwardScanner` with this policy outputs the latest key value pairs.
-pub struct LatestKvPolicy;
+pub struct LatestKvBasePolicy;
 
-impl<S: Snapshot> ScanPolicy<S> for LatestKvPolicy {
-    type Output = (Key, Value);
+impl<S: Snapshot> ScanPolicy<S> for LatestKvBasePolicy {
+    type Output = (Key, TimeStamp, Value);
 
     fn handle_lock(
         &mut self,
@@ -409,7 +413,8 @@ impl<S: Snapshot> ScanPolicy<S> for LatestKvPolicy {
             statistics.lock.processed_keys += 1;
             // Skip current_user_key because this key is either blocked or handled.
             cursors.move_write_cursor_to_next_user_key(&current_user_key, statistics)?;
-            if cfg.access_locks.contains(lock.ts) {
+            // todo support mvcc version when read through lock
+            if cfg.access_locks.contains(lock.ts) && !cfg.need_mvcc_version_info {
                 cursors.ensure_default_cursor(cfg)?;
                 return super::load_data_by_lock(
                     &current_user_key,
@@ -419,7 +424,7 @@ impl<S: Snapshot> ScanPolicy<S> for LatestKvPolicy {
                     statistics,
                 )
                 .map(|val| match val {
-                    Some(v) => HandleRes::Return((current_user_key, v)),
+                    Some(v) => HandleRes::Return((current_user_key, TimeStamp::zero(), v)),
                     None => HandleRes::MoveToNext,
                 });
             }
@@ -431,10 +436,12 @@ impl<S: Snapshot> ScanPolicy<S> for LatestKvPolicy {
     fn handle_write(
         &mut self,
         current_user_key: Key,
+        current_commit_ts: TimeStamp,
         cfg: &mut ScannerConfig<S>,
         cursors: &mut Cursors<S>,
         statistics: &mut Statistics,
     ) -> Result<HandleRes<Self::Output>> {
+        let mut key_commit_ts = current_commit_ts;
         let value: Option<Value> = loop {
             let write = WriteRef::parse(cursors.write.value(&mut statistics.write))?;
 
@@ -497,14 +504,112 @@ impl<S: Snapshot> ScanPolicy<S> for LatestKvPolicy {
                 // Meet another key. Needn't move write cursor to next key.
                 return Ok(HandleRes::Skip(current_user_key));
             }
+            key_commit_ts = Key::decode_ts_from(current_key)?;
         };
         cursors.move_write_cursor_to_next_user_key(&current_user_key, statistics)?;
         Ok(match value {
-            Some(v) => HandleRes::Return((current_user_key, v)),
+            Some(v) => HandleRes::Return((current_user_key, key_commit_ts, v)),
             _ => HandleRes::Skip(current_user_key),
         })
     }
 
+    fn output_size(&mut self, output: &Self::Output) -> usize {
+        output.0.len() + 8 + output.2.len()
+    }
+}
+
+pub struct LatestKvPolicy {
+    pub super_policy: LatestKvBasePolicy
+}
+
+impl<S: Snapshot> ScanPolicy<S> for LatestKvPolicy {
+    type Output = (Key, Value);
+    fn handle_lock(
+        &mut self,
+        current_user_key: Key,
+        cfg: &mut ScannerConfig<S>,
+        cursors: &mut Cursors<S>,
+        statistics: &mut Statistics,
+    ) -> Result<HandleRes<Self::Output>> {
+        // todo delay clone until necessary
+        let output = match self.super_policy.handle_lock(current_user_key, cfg, cursors, statistics) ?
+        {
+            HandleRes::Return((key, _, value)) => HandleRes::Return((key, value)),
+            HandleRes::Skip(key) => HandleRes::Skip(key),
+            HandleRes::MoveToNext => HandleRes::MoveToNext,
+        };
+        return Ok(output);
+    }
+
+    fn handle_write(
+        &mut self,
+        current_user_key: Key,
+        current_commit_ts: TimeStamp,
+        cfg: &mut ScannerConfig<S>,
+        cursors: &mut Cursors<S>,
+        statistics: &mut Statistics,
+    ) -> Result<HandleRes<Self::Output>> {
+        // todo delay clone until necessary
+        let output = match self.super_policy.handle_write(current_user_key, current_commit_ts, cfg, cursors, statistics) ?
+        {
+            HandleRes::Return((key, _, value)) => HandleRes::Return((key, value)),
+            HandleRes::Skip(key) => HandleRes::Skip(key),
+            HandleRes::MoveToNext => HandleRes::MoveToNext,
+        };
+        return Ok(output);
+    }
+    fn output_size(&mut self, output: &Self::Output) -> usize {
+        output.0.len() + output.1.len()
+    }
+}
+
+pub struct LatestKvWithMVCCVersionPolicy {
+    pub super_policy: LatestKvBasePolicy
+}
+
+impl<S: Snapshot> ScanPolicy<S> for LatestKvWithMVCCVersionPolicy {
+    type Output = (Key, Value);
+    fn handle_lock(
+        &mut self,
+        current_user_key: Key,
+        cfg: &mut ScannerConfig<S>,
+        cursors: &mut Cursors<S>,
+        statistics: &mut Statistics,
+    ) -> Result<HandleRes<Self::Output>> {
+        // todo delay clone until necessary
+        let output = match self.super_policy.handle_lock(current_user_key, cfg, cursors, statistics) ?
+        {
+            HandleRes::Return((_, _, _)) => {
+                // todo handle_lock return additional commit_ts and append the commit_ts to key 
+                return Err(Other("get data from lock does not support mvcc version yet".into()).into());
+            }
+            HandleRes::Skip(key) => HandleRes::Skip(key),
+            HandleRes::MoveToNext => HandleRes::MoveToNext,
+        };
+        return Ok(output);
+    }
+
+    fn handle_write(
+        &mut self,
+        current_user_key: Key,
+        current_commit_ts: TimeStamp,
+        cfg: &mut ScannerConfig<S>,
+        cursors: &mut Cursors<S>,
+        statistics: &mut Statistics,
+    ) -> Result<HandleRes<Self::Output>> {
+        // todo delay clone until necessary
+        let output = match self.super_policy.handle_write(current_user_key, current_commit_ts, cfg, cursors, statistics) ?
+        {
+            // todo append commit_ts to key
+            HandleRes::Return((key, commit_ts, value)) => {
+                let key_with_ts = key.clone().append_ts(commit_ts);
+                HandleRes::Return((key_with_ts, value))
+            }
+            HandleRes::Skip(key) => HandleRes::Skip(key),
+            HandleRes::MoveToNext => HandleRes::MoveToNext,
+        };
+        return Ok(output);
+    }
     fn output_size(&mut self, output: &Self::Output) -> usize {
         output.0.len() + output.1.len()
     }
@@ -545,6 +650,7 @@ impl<S: Snapshot> ScanPolicy<S> for LatestEntryPolicy {
     fn handle_write(
         &mut self,
         current_user_key: Key,
+        _: TimeStamp,
         cfg: &mut ScannerConfig<S>,
         cursors: &mut Cursors<S>,
         statistics: &mut Statistics,
@@ -752,6 +858,7 @@ impl<S: Snapshot> ScanPolicy<S> for DeltaEntryPolicy {
     fn handle_write(
         &mut self,
         current_user_key: Key,
+        _: TimeStamp,
         cfg: &mut ScannerConfig<S>,
         cursors: &mut Cursors<S>,
         statistics: &mut Statistics,
@@ -856,6 +963,10 @@ impl<S: Snapshot> ScanPolicy<S> for DeltaEntryPolicy {
 ///
 /// Use `ScannerBuilder` to build `ForwardKvScanner`.
 pub type ForwardKvScanner<S> = ForwardScanner<S, LatestKvPolicy>;
+
+
+/// This scanner is like `ForwardKvScanner` but outputs key with mvcc version(commit_ts).
+pub type ForwardKvWithMVCCVersionScanner<S> = ForwardScanner<S, LatestKvWithMVCCVersionPolicy>;
 
 /// This scanner is like `ForwardKvScanner` but outputs `TxnEntry`.
 pub type EntryScanner<S> = ForwardScanner<S, LatestEntryPolicy>;

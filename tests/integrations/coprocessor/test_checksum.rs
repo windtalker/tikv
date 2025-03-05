@@ -84,6 +84,7 @@ fn reversed_checksum_crc64_xor<E: Engine>(store: &Store<E>, range: KeyRange) -> 
         scan_backward_in_range: true,
         is_key_only: false,
         is_scanned_range_aware: false,
+        need_mvcc_version_info: false,
     });
 
     let mut checksum = 0;

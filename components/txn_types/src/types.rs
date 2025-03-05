@@ -81,6 +81,21 @@ impl Key {
         Ok(k)
     }
 
+    #[inline]
+    pub fn into_raw_with_ts(self) -> Result<Vec<u8>, codec::Error> {
+        /*let mut k = self.0;
+        let mut ts = k[k.len() - number::U64_SIZE..].to_vec();
+        k = k[..k.len() - number::U64_SIZE].to_vec();
+        bytes::decode_bytes_in_place(&mut k, false)?;
+        k.append(&mut ts);
+        Ok(k)*/
+        let mut k = self.0;
+        let ts = k.split_off(k.len() - number::U64_SIZE);
+        bytes::decode_bytes_in_place(&mut k, false)?;
+        k.extend(ts);
+        Ok(k)
+    }
+
     /// Gets the raw representation of this key.
     #[inline]
     pub fn to_raw(&self) -> Result<Vec<u8>, codec::Error> {

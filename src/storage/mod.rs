@@ -1540,7 +1540,7 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
                     );
 
                     let mut scanner =
-                        snap_store.scanner(reverse_scan, key_only, false, start_key, end_key)?;
+                        snap_store.scanner(reverse_scan, key_only, false, start_key, end_key, false)?;
                     let res = scanner.scan(limit, sample_step);
 
                     let statistics = scanner.take_statistics();

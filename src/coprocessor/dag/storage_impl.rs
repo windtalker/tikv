@@ -41,6 +41,7 @@ impl<S: Store> Storage for TikvStorage<S> {
         is_backward_scan: bool,
         is_key_only: bool,
         range: IntervalRange,
+        need_mvcc_version_info: bool,
     ) -> QeResult<()> {
         if let Some(scanner) = &mut self.scanner {
             self.cf_stats_backlog.add(&scanner.take_statistics());
@@ -59,6 +60,7 @@ impl<S: Store> Storage for TikvStorage<S> {
                     self.met_newer_ts_data_backlog == NewerTsCheckState::NotMetYet,
                     lower,
                     upper,
+                    need_mvcc_version_info,
                 )
                 .map_err(Error::from)?,
             // There is no transform from storage error to QE's StorageError,
@@ -67,11 +69,15 @@ impl<S: Store> Storage for TikvStorage<S> {
         Ok(())
     }
 
-    fn scan_next(&mut self) -> QeResult<Option<OwnedKvPair>> {
+    fn scan_next(&mut self, need_mvcc_version_info: bool) -> QeResult<Option<OwnedKvPair>> {
         // Unwrap is fine because we must have called `reset_range` before calling
         // `scan_next`.
         let kv = self.scanner.as_mut().unwrap().next().map_err(Error::from)?;
-        Ok(kv.map(|(k, v)| (k.into_raw().unwrap(), v)))
+        if need_mvcc_version_info {
+            Ok(kv.map(|(k, v)| (k.into_raw_with_ts().unwrap(), v)))
+        } else {
+            Ok(kv.map(|(k, v)| (k.into_raw().unwrap(), v)))
+        }
     }
 
     fn get(&mut self, _is_key_only: bool, range: PointRange) -> QeResult<Option<OwnedKvPair>> {

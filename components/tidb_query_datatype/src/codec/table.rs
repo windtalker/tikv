@@ -7,6 +7,7 @@ use codec::prelude::*;
 use collections::{HashMap, HashSet};
 use kvproto::coprocessor::KeyRange;
 use tikv_util::codec::BytesSlice;
+use tikv_util::codec::number;
 use tipb::ColumnInfo;
 
 use super::{
@@ -45,6 +46,9 @@ pub const EXTRA_PARTITION_ID_COL_ID: i64 = -2;
 /// ID for physical table id column, see <https://github.com/tikv/tikv/issues/11888>
 /// If it's a global index, it will return partition id, see <https://github.com/tikv/tikv/issues/17138>
 pub const EXTRA_PHYSICAL_TABLE_ID_COL_ID: i64 = -3;
+
+/// ID for mvcc version column
+pub const EXTRA_MVCC_VERSION_COL_ID: i64 = -1024;
 
 /// `TableEncoder` encodes the table record/index prefix.
 trait TableEncoder: NumberEncoder {
@@ -139,6 +143,16 @@ pub fn decode_table_id(key: &[u8]) -> Result<i64> {
         ));
     }
     buf.read_i64().map_err(Error::from)
+}
+
+/// Decodes ts from the key.
+pub fn decode_ts(key: &[u8]) -> Result<u64> {
+        let len = key.len();
+        if len < number::U64_SIZE {
+            return Err(box_err!("invalid ts key: {:?}", key));
+        }
+        let mut ts = &key[len - number::U64_SIZE..];
+        Ok(number::decode_u64_desc(&mut ts)?.into())
 }
 
 /// `flatten` flattens the datum.

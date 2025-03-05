@@ -37,6 +37,7 @@ pub struct RangesScanner<T, F> {
     rescheduler: RescheduleChecker,
 
     _phantom: PhantomData<F>,
+    need_mvcc_version_info: bool,
 }
 
 // TODO: maybe it's better to make it generic to avoid directly depending
@@ -73,6 +74,7 @@ pub struct RangesScannerOptions<T> {
     pub scan_backward_in_range: bool, // TODO: This can be const generics
     pub is_key_only: bool,            // TODO: This can be const generics
     pub is_scanned_range_aware: bool, // TODO: This can be const generics
+    pub need_mvcc_version_info: bool,
 }
 
 impl<T: Storage, F: KvFormat> RangesScanner<T, F> {
@@ -83,6 +85,7 @@ impl<T: Storage, F: KvFormat> RangesScanner<T, F> {
             scan_backward_in_range,
             is_key_only,
             is_scanned_range_aware,
+            need_mvcc_version_info,
         }: RangesScannerOptions<T>,
     ) -> RangesScanner<T, F> {
         let ranges_len = ranges.len();
@@ -102,6 +105,7 @@ impl<T: Storage, F: KvFormat> RangesScanner<T, F> {
             working_range_end_key: Vec::with_capacity(KEY_BUFFER_CAPACITY),
             rescheduler: RescheduleChecker::new(),
             _phantom: PhantomData,
+            need_mvcc_version_info,
         }
     }
 
@@ -129,6 +133,9 @@ impl<T: Storage, F: KvFormat> RangesScanner<T, F> {
                     }
                     self.ranges_iter.notify_drained();
                     self.scanned_rows_per_range.push(0);
+                    if self.need_mvcc_version_info {
+                        return Err(StorageError(anyhow::Error::msg("MVCC version info is not supproted in point get")));
+                    }
                     self.storage.get(self.is_key_only, r)?
                 }
                 IterStatus::NewRange(Range::Interval(r)) => {
@@ -137,12 +144,12 @@ impl<T: Storage, F: KvFormat> RangesScanner<T, F> {
                     }
                     self.scanned_rows_per_range.push(0);
                     self.storage
-                        .begin_scan(self.scan_backward_in_range, self.is_key_only, r)?;
-                    self.storage.scan_next()?
+                        .begin_scan(self.scan_backward_in_range, self.is_key_only, r, self.need_mvcc_version_info)?;
+                    self.storage.scan_next(self.need_mvcc_version_info)?
                 }
                 IterStatus::Continue => {
                     force_check = false;
-                    self.storage.scan_next()?
+                    self.storage.scan_next(self.need_mvcc_version_info)?
                 }
                 IterStatus::Drained => {
                     if self.is_scanned_range_aware {
@@ -326,6 +333,7 @@ mod tests {
             scan_backward_in_range: false,
             is_key_only: false,
             is_scanned_range_aware: false,
+            need_mvcc_version_info: false
         });
         assert_eq!(
             block_on(scanner.next()).unwrap().unwrap(),
@@ -362,6 +370,7 @@ mod tests {
             scan_backward_in_range: true,
             is_key_only: false,
             is_scanned_range_aware: false,
+            need_mvcc_version_info: false,
         });
         assert_eq!(
             block_on(scanner.next()).unwrap().unwrap(),
@@ -393,6 +402,7 @@ mod tests {
             scan_backward_in_range: false,
             is_key_only: true,
             is_scanned_range_aware: false,
+            need_mvcc_version_info: false,
         });
         assert_eq!(
             block_on(scanner.next()).unwrap().unwrap(),
@@ -433,6 +443,7 @@ mod tests {
             scan_backward_in_range: false,
             is_key_only: false,
             is_scanned_range_aware: false,
+            need_mvcc_version_info: false,
         });
         let mut scanned_rows_per_range = Vec::new();
 
@@ -488,6 +499,7 @@ mod tests {
             scan_backward_in_range: false,
             is_key_only: false,
             is_scanned_range_aware: true,
+            need_mvcc_version_info: false,
         });
 
         let r = scanner.take_scanned_range();
@@ -508,6 +520,7 @@ mod tests {
             scan_backward_in_range: false,
             is_key_only: false,
             is_scanned_range_aware: true,
+            need_mvcc_version_info: false,
         });
 
         assert_eq!(block_on(scanner.next()).unwrap(), None);
@@ -524,6 +537,7 @@ mod tests {
             scan_backward_in_range: false,
             is_key_only: false,
             is_scanned_range_aware: true,
+            need_mvcc_version_info: false,
         });
 
         assert_eq!(block_on(scanner.next()).unwrap(), None);
@@ -540,6 +554,7 @@ mod tests {
             scan_backward_in_range: false,
             is_key_only: false,
             is_scanned_range_aware: true,
+            need_mvcc_version_info: false,
         });
 
         assert_eq!(&block_on(scanner.next()).unwrap().unwrap().key(), b"foo");
@@ -578,6 +593,7 @@ mod tests {
             scan_backward_in_range: false,
             is_key_only: false,
             is_scanned_range_aware: true,
+            need_mvcc_version_info: false,
         });
 
         assert_eq!(&block_on(scanner.next()).unwrap().unwrap().key(), b"foo");
@@ -623,6 +639,7 @@ mod tests {
             scan_backward_in_range: true,
             is_key_only: false,
             is_scanned_range_aware: true,
+            need_mvcc_version_info: false,
         });
 
         let r = scanner.take_scanned_range();
@@ -643,6 +660,7 @@ mod tests {
             scan_backward_in_range: true,
             is_key_only: false,
             is_scanned_range_aware: true,
+            need_mvcc_version_info: false,
         });
 
         assert_eq!(block_on(scanner.next()).unwrap(), None);
@@ -659,6 +677,7 @@ mod tests {
             scan_backward_in_range: true,
             is_key_only: false,
             is_scanned_range_aware: true,
+            need_mvcc_version_info: false,
         });
 
         assert_eq!(block_on(scanner.next()).unwrap(), None);
@@ -675,6 +694,7 @@ mod tests {
             scan_backward_in_range: true,
             is_key_only: false,
             is_scanned_range_aware: true,
+            need_mvcc_version_info: false,
         });
 
         assert_eq!(&block_on(scanner.next()).unwrap().unwrap().key(), b"foo_3");
@@ -711,6 +731,7 @@ mod tests {
             scan_backward_in_range: true,
             is_key_only: false,
             is_scanned_range_aware: true,
+            need_mvcc_version_info: false,
         });
 
         assert_eq!(&block_on(scanner.next()).unwrap().unwrap().key(), b"bar_2");
@@ -750,6 +771,7 @@ mod tests {
             scan_backward_in_range: false,
             is_key_only: false,
             is_scanned_range_aware: true,
+            need_mvcc_version_info: false,
         });
 
         // Only lower_inclusive is updated.
@@ -802,6 +824,7 @@ mod tests {
             scan_backward_in_range: false,
             is_key_only: false,
             is_scanned_range_aware: true,
+            need_mvcc_version_info: false,
         });
 
         // Only lower_inclusive is updated.
@@ -857,6 +880,7 @@ mod tests {
             scan_backward_in_range: true,
             is_key_only: false,
             is_scanned_range_aware: true,
+            need_mvcc_version_info: false,
         });
 
         // Only lower_inclusive is updated.
@@ -907,6 +931,7 @@ mod tests {
             scan_backward_in_range: true,
             is_key_only: false,
             is_scanned_range_aware: true,
+            need_mvcc_version_info: false,
         });
 
         // Lower_inclusive is updated. Upper_exclusive is not update.

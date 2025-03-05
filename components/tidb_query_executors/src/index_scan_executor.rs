@@ -151,6 +151,7 @@ impl<S: Storage, F: KvFormat> BatchIndexScanExecutor<S, F> {
             is_key_only: false,
             accept_point_range: unique,
             is_scanned_range_aware,
+            need_mvcc_version_info: false,
         })?;
         Ok(Self(wrapper))
     }

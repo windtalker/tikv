@@ -16,7 +16,8 @@ pub use self::forward::{DeltaScanner, EntryScanner, test_util};
 use self::{
     backward::BackwardKvScanner,
     forward::{
-        DeltaEntryPolicy, ForwardKvScanner, ForwardScanner, LatestEntryPolicy, LatestKvPolicy,
+        DeltaEntryPolicy, ForwardKvScanner, ForwardKvWithMVCCVersionScanner, ForwardScanner, 
+        LatestEntryPolicy, LatestKvBasePolicy, LatestKvPolicy, LatestKvWithMVCCVersionPolicy
     },
 };
 use crate::storage::{
@@ -148,24 +149,49 @@ impl<S: Snapshot> ScannerBuilder<S> {
         self
     }
 
+    /// Check whether there is data with newer ts. The result of
+    /// `met_newer_ts_data` is Unknown if this option is not set.
+    ///
+    /// Default is false.
+    #[inline]
+    #[must_use]
+    pub fn need_mvcc_version_info(mut self, enabled: bool) -> Self {
+        self.0.need_mvcc_version_info = enabled;
+        self
+    }
+
     /// Build `Scanner` from the current configuration.
     pub fn build(mut self) -> Result<Scanner<S>> {
         let lock_cursor = self.build_lock_cursor()?;
         let write_cursor = self.0.create_cf_cursor(CF_WRITE)?;
         if self.0.desc {
+            if self.0.need_mvcc_version_info {
+                error!("backward scan with mvcc version info is not supported");
+            }
             Ok(Scanner::Backward(BackwardKvScanner::new(
                 self.0,
                 lock_cursor,
                 write_cursor,
             )))
         } else {
-            Ok(Scanner::Forward(ForwardScanner::new(
-                self.0,
-                lock_cursor,
-                write_cursor,
-                None,
-                LatestKvPolicy,
-            )))
+            if self.0.need_mvcc_version_info {
+                error!("forward scan with mvcc version info is not supported");
+                Ok(Scanner::ForwardWithMVCCVersion(ForwardKvWithMVCCVersionScanner::new(
+                    self.0,
+                    lock_cursor,
+                    write_cursor,
+                    None,
+                    LatestKvWithMVCCVersionPolicy{super_policy: LatestKvBasePolicy},
+                )))
+            } else {
+                Ok(Scanner::Forward(ForwardScanner::new(
+                 self.0,
+                 lock_cursor,
+                 write_cursor,
+                 None,
+                 LatestKvPolicy{super_policy: LatestKvBasePolicy},
+             )))
+         }
         }
     }
 
@@ -220,6 +246,7 @@ impl<S: Snapshot> ScannerBuilder<S> {
 
 pub enum Scanner<S: Snapshot> {
     Forward(ForwardKvScanner<S>),
+    ForwardWithMVCCVersion(ForwardKvWithMVCCVersionScanner<S>),
     Backward(BackwardKvScanner<S>),
 }
 
@@ -229,6 +256,7 @@ impl<S: Snapshot> StoreScanner for Scanner<S> {
 
         match self {
             Scanner::Forward(scanner) => Ok(scanner.read_next()?),
+            Scanner::ForwardWithMVCCVersion(scanner) => Ok(scanner.read_next()?),
             Scanner::Backward(scanner) => Ok(scanner.read_next()?),
         }
     }
@@ -237,6 +265,7 @@ impl<S: Snapshot> StoreScanner for Scanner<S> {
     fn take_statistics(&mut self) -> Statistics {
         match self {
             Scanner::Forward(scanner) => scanner.take_statistics(),
+            Scanner::ForwardWithMVCCVersion(scanner) => scanner.take_statistics(),
             Scanner::Backward(scanner) => scanner.take_statistics(),
         }
     }
@@ -246,6 +275,7 @@ impl<S: Snapshot> StoreScanner for Scanner<S> {
     fn met_newer_ts_data(&self) -> NewerTsCheckState {
         match self {
             Scanner::Forward(scanner) => scanner.met_newer_ts_data(),
+            Scanner::ForwardWithMVCCVersion(scanner) => scanner.met_newer_ts_data(),
             Scanner::Backward(scanner) => scanner.met_newer_ts_data(),
         }
     }
@@ -275,6 +305,7 @@ pub struct ScannerConfig<S: Snapshot> {
     access_locks: TsSet,
 
     check_has_newer_ts_data: bool,
+    need_mvcc_version_info: bool,
 }
 
 impl<S: Snapshot> ScannerConfig<S> {
@@ -293,6 +324,7 @@ impl<S: Snapshot> ScannerConfig<S> {
             bypass_locks: Default::default(),
             access_locks: Default::default(),
             check_has_newer_ts_data: false,
+            need_mvcc_version_info: false,
         }
     }
 

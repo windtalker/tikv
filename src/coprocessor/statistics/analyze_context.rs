@@ -236,6 +236,7 @@ impl<S: Snapshot, F: KvFormat> RequestHandler for AnalyzeContext<S, F> {
                     scan_backward_in_range: false,
                     is_key_only: true,
                     is_scanned_range_aware: false,
+                    need_mvcc_version_info: false,
                 });
                 let res = AnalyzeContext::handle_index(
                     req,

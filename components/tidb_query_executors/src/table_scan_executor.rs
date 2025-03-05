@@ -19,6 +19,7 @@ use tidb_query_datatype::{
     },
     expr::{EvalConfig, EvalContext},
 };
+use tikv_util::error;
 use tipb::{ColumnInfo, FieldType, TableScan};
 
 use super::util::scan_executor::*;
@@ -58,6 +59,7 @@ impl<S: Storage, F: KvFormat> BatchTableScanExecutor<S, F> {
         let mut schema = Vec::with_capacity(columns_info.len());
         let mut columns_default_value = Vec::with_capacity(columns_info.len());
         let mut column_id_index = HashMap::default();
+        let mut need_mvcc_version_info = false;
 
         let primary_column_ids_set = primary_column_ids.iter().collect::<HashSet<_>>();
         let primary_prefix_column_ids_set =
@@ -83,7 +85,14 @@ impl<S: Storage, F: KvFormat> BatchTableScanExecutor<S, F> {
                 }
                 column_id_index.insert(ci.get_column_id(), index);
             }
-
+            if ci.get_column_id() == table::EXTRA_MVCC_VERSION_COL_ID {
+                need_mvcc_version_info = true;
+                if is_backward {
+                    return Err(other_err!(
+                        "Backward scan does not suppport MVCC version column"
+                    ));
+                }
+            }
             // Note: if two PK handles are given, we will only preserve the
             // *last* one. Also if two columns with the same column
             // id are given, we will only preserve the *last* one.
@@ -98,6 +107,7 @@ impl<S: Storage, F: KvFormat> BatchTableScanExecutor<S, F> {
             handle_indices,
             primary_column_ids,
             is_column_filled,
+            need_mvcc_version_info,
         };
         let wrapper = ScanExecutor::new(ScanExecutorOptions {
             imp,
@@ -107,6 +117,7 @@ impl<S: Storage, F: KvFormat> BatchTableScanExecutor<S, F> {
             is_key_only,
             accept_point_range: no_common_handle,
             is_scanned_range_aware,
+            need_mvcc_version_info,
         })?;
         Ok(Self(wrapper))
     }
@@ -175,6 +186,9 @@ struct TableScanExecutorImpl {
     /// `next_batch`. It is a struct level field in order to prevent repeated
     /// memory allocations since its length is fixed for each `next_batch` call.
     is_column_filled: Vec<bool>,
+
+    /// A flag indicating whether the table contains MVCC version column.
+    need_mvcc_version_info: bool,
 }
 
 impl TableScanExecutorImpl {
@@ -292,6 +306,10 @@ impl ScanExecutorImpl for TableScanExecutorImpl {
             .column_id_index
             .get(&table::EXTRA_PHYSICAL_TABLE_ID_COL_ID)
             .copied();
+        let mvcc_version_column_idx = self
+            .column_id_index
+            .get(&table::EXTRA_MVCC_VERSION_COL_ID)
+            .copied();
         let mut last_index = 0usize;
         for handle_index in &self.handle_indices {
             // `handle_indices` is expected to be sorted.
@@ -300,6 +318,11 @@ impl ScanExecutorImpl for TableScanExecutorImpl {
             // Fill last `handle_index - 1` columns.
             for i in last_index..*handle_index {
                 if Some(i) == physical_table_id_column_idx {
+                    columns.push(LazyBatchColumn::decoded_with_capacity_and_tp(
+                        scan_rows,
+                        EvalType::Int,
+                    ));
+                } else if Some(i) == mvcc_version_column_idx {
                     columns.push(LazyBatchColumn::decoded_with_capacity_and_tp(
                         scan_rows,
                         EvalType::Int,
@@ -325,6 +348,11 @@ impl ScanExecutorImpl for TableScanExecutorImpl {
         // [non-pk, non-pk]
         for i in last_index..columns_len {
             if Some(i) == physical_table_id_column_idx {
+                columns.push(LazyBatchColumn::decoded_with_capacity_and_tp(
+                    scan_rows,
+                    EvalType::Int,
+                ));
+            } else if Some(i) == mvcc_version_column_idx {
                 columns.push(LazyBatchColumn::decoded_with_capacity_and_tp(
                     scan_rows,
                     EvalType::Int,
@@ -402,6 +430,17 @@ impl ScanExecutorImpl for TableScanExecutorImpl {
             let table_id = table::decode_table_id(key)?;
             columns[*idx].mut_decoded().push_int(Some(table_id));
             self.is_column_filled[*idx] = true;
+        }
+        if self.need_mvcc_version_info {
+            let some_mvcc_version_info_column_index = self
+                .column_id_index
+                .get(&table::EXTRA_MVCC_VERSION_COL_ID);
+            if let Some(idx) = some_mvcc_version_info_column_index {
+                let ts = table::decode_ts(key)?;
+                error!("table scan with commit ts = {}", ts);
+                columns[*idx].mut_decoded().push_int(Some(ts as i64));
+                self.is_column_filled[*idx] = true;
+            }
         }
 
         // Some fields may be missing in the row, we push corresponding default value to

@@ -57,6 +57,7 @@ impl super::Storage for FixtureStorage {
         is_backward_scan: bool,
         is_key_only: bool,
         range: IntervalRange,
+        _: bool,
     ) -> Result<()> {
         let data_view = self
             .data
@@ -72,7 +73,7 @@ impl super::Storage for FixtureStorage {
         Ok(())
     }
 
-    fn scan_next(&mut self) -> Result<Option<super::OwnedKvPair>> {
+    fn scan_next(&mut self, _: bool) -> Result<Option<super::OwnedKvPair>> {
         let value = if !self.is_backward_scan {
             // During the call of this function, `data` must be valid and we are only
             // returning data clones to outside, so this access is safe.
@@ -147,85 +148,85 @@ mod tests {
 
         // Scan Backward = false, Key only = false
         storage
-            .begin_scan(false, false, IntervalRange::from(("foo", "foo_3")))
+            .begin_scan(false, false, IntervalRange::from(("foo", "foo_3")), false)
             .unwrap();
 
         assert_eq!(
-            storage.scan_next().unwrap(),
+            storage.scan_next(false).unwrap(),
             Some((b"foo".to_vec(), b"1".to_vec()))
         );
 
         let mut s2 = storage.clone();
         assert_eq!(
-            s2.scan_next().unwrap(),
+            s2.scan_next(false).unwrap(),
             Some((b"foo_2".to_vec(), b"3".to_vec()))
         );
 
         assert_eq!(
-            storage.scan_next().unwrap(),
+            storage.scan_next(false).unwrap(),
             Some((b"foo_2".to_vec(), b"3".to_vec()))
         );
-        assert_eq!(storage.scan_next().unwrap(), None);
-        assert_eq!(storage.scan_next().unwrap(), None);
+        assert_eq!(storage.scan_next(false).unwrap(), None);
+        assert_eq!(storage.scan_next(false).unwrap(), None);
 
-        assert_eq!(s2.scan_next().unwrap(), None);
-        assert_eq!(s2.scan_next().unwrap(), None);
+        assert_eq!(s2.scan_next(false).unwrap(), None);
+        assert_eq!(s2.scan_next(false).unwrap(), None);
 
         // Scan Backward = false, Key only = false
         storage
-            .begin_scan(false, false, IntervalRange::from(("bar", "bar_2")))
+            .begin_scan(false, false, IntervalRange::from(("bar", "bar_2")), false)
             .unwrap();
 
         assert_eq!(
-            storage.scan_next().unwrap(),
+            storage.scan_next(false).unwrap(),
             Some((b"bar".to_vec(), b"2".to_vec()))
         );
-        assert_eq!(storage.scan_next().unwrap(), None);
+        assert_eq!(storage.scan_next(false).unwrap(), None);
 
         // Scan Backward = false, Key only = true
         storage
-            .begin_scan(false, true, IntervalRange::from(("bar", "foo_")))
+            .begin_scan(false, true, IntervalRange::from(("bar", "foo_")), false)
             .unwrap();
 
         assert_eq!(
-            storage.scan_next().unwrap(),
+            storage.scan_next(false).unwrap(),
             Some((b"bar".to_vec(), Vec::new()))
         );
         assert_eq!(
-            storage.scan_next().unwrap(),
+            storage.scan_next(false).unwrap(),
             Some((b"bar_2".to_vec(), Vec::new()))
         );
         assert_eq!(
-            storage.scan_next().unwrap(),
+            storage.scan_next(false).unwrap(),
             Some((b"foo".to_vec(), Vec::new()))
         );
-        assert_eq!(storage.scan_next().unwrap(), None);
+        assert_eq!(storage.scan_next(false).unwrap(), None);
 
         // Scan Backward = true, Key only = false
         storage
-            .begin_scan(true, false, IntervalRange::from(("foo", "foo_3")))
+            .begin_scan(true, false, IntervalRange::from(("foo", "foo_3")), false)
             .unwrap();
 
         assert_eq!(
-            storage.scan_next().unwrap(),
+            storage.scan_next(false).unwrap(),
             Some((b"foo_2".to_vec(), b"3".to_vec()))
         );
         assert_eq!(
-            storage.scan_next().unwrap(),
+            storage.scan_next(false).unwrap(),
             Some((b"foo".to_vec(), b"1".to_vec()))
         );
-        assert_eq!(storage.scan_next().unwrap(), None);
-        assert_eq!(storage.scan_next().unwrap(), None);
+        assert_eq!(storage.scan_next(false).unwrap(), None);
+        assert_eq!(storage.scan_next(false).unwrap(), None);
 
         // Scan empty range
         storage
-            .begin_scan(false, false, IntervalRange::from(("faa", "fab")))
+            .begin_scan(false, false, IntervalRange::from(("faa", "fab")), false)
             .unwrap();
-        assert_eq!(storage.scan_next().unwrap(), None);
+        assert_eq!(storage.scan_next(false).unwrap(), None);
 
         storage
-            .begin_scan(false, false, IntervalRange::from(("foo", "foo")))
+            .begin_scan(false, false, IntervalRange::from(("foo", "foo")), false)
             .unwrap();
-        assert_eq!(storage.scan_next().unwrap(), None);
+        assert_eq!(storage.scan_next(false).unwrap(), None);
     }
 }

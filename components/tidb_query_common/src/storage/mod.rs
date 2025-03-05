@@ -23,9 +23,10 @@ pub trait Storage: Send {
         is_backward_scan: bool,
         is_key_only: bool,
         range: IntervalRange,
+        need_mvcc_version_info: bool,
     ) -> Result<()>;
 
-    fn scan_next(&mut self) -> Result<Option<OwnedKvPair>>;
+    fn scan_next(&mut self, need_mvcc_version_info: bool) -> Result<Option<OwnedKvPair>>;
 
     // TODO: Use const generics.
     // TODO: Use reference is better.
@@ -44,12 +45,13 @@ impl<T: Storage + ?Sized> Storage for Box<T> {
         is_backward_scan: bool,
         is_key_only: bool,
         range: IntervalRange,
+        need_mvcc_version_info: bool,
     ) -> Result<()> {
-        (**self).begin_scan(is_backward_scan, is_key_only, range)
+        (**self).begin_scan(is_backward_scan, is_key_only, range, need_mvcc_version_info)
     }
 
-    fn scan_next(&mut self) -> Result<Option<OwnedKvPair>> {
-        (**self).scan_next()
+    fn scan_next(&mut self, need_mvcc_version_info: bool) -> Result<Option<OwnedKvPair>> {
+        (**self).scan_next(need_mvcc_version_info)
     }
 
     fn get(&mut self, is_key_only: bool, range: PointRange) -> Result<Option<OwnedKvPair>> {
