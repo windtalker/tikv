@@ -1916,6 +1916,30 @@ mod tests {
     }
 
     #[test]
+    fn test_ord_invalid_utf8_bytes() {
+        let cases = vec![
+            (vec![0x80], Some(128i64)),
+            (vec![0xE0], Some(224i64)),
+            (vec![0xE0, 0x80], Some(224i64)),
+            (vec![0xF0, 0x9F], Some(240i64)),
+        ];
+
+        for (arg, expect_output) in cases {
+            let output = RpnFnScalarEvaluator::new()
+                .return_field_type(
+                    FieldTypeBuilder::new()
+                        .tp(FieldTypeTp::LongLong)
+                        .collation(Collation::Utf8Mb4Bin)
+                        .build(),
+                )
+                .push_param(Some(arg))
+                .evaluate(ScalarFuncSig::Ord)
+                .unwrap();
+            assert_eq!(output, expect_output);
+        }
+    }
+
+    #[test]
     fn test_ascii() {
         let test_cases = vec![
             (None, None),

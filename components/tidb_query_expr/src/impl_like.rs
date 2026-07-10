@@ -248,6 +248,44 @@ mod tests {
     }
 
     #[test]
+    fn test_like_invalid_utf8_bytes() {
+        let cases = vec![
+            (vec![0x80], vec![0x80], Some(1)),
+            (vec![0xE0], vec![0xE0], Some(1)),
+            (vec![0xE0, 0x80], vec![0xE0, 0x80], Some(1)),
+            (vec![0xF0, 0x9F], vec![0xF0, 0x9F], Some(1)),
+            (
+                vec![0x21, 0x35, 0x10, 0x8F],
+                vec![0x21, 0x35, 0x10, 0x8F],
+                Some(1),
+            ),
+            (vec![0xE0], b"_".to_vec(), Some(1)),
+            (vec![0xE0], b"%".to_vec(), Some(1)),
+            (vec![0xE0], vec![0xE1], Some(0)),
+        ];
+
+        for (target, pattern, expected) in cases {
+            let collation = Collation::Utf8Mb4Bin;
+            let ret_ft = FieldTypeBuilder::new()
+                .tp(FieldTypeTp::LongLong)
+                .collation(collation)
+                .build();
+            let arg_ft = FieldTypeBuilder::new()
+                .tp(FieldTypeTp::String)
+                .collation(collation)
+                .build();
+            let output = RpnFnScalarEvaluator::new()
+                .return_field_type(ret_ft)
+                .push_param_with_field_type(target.clone(), arg_ft.clone())
+                .push_param_with_field_type(pattern.clone(), arg_ft)
+                .push_param('\\' as i64)
+                .evaluate(ScalarFuncSig::LikeSig)
+                .unwrap();
+            assert_eq!(output, expected, "target={target:?}, pattern={pattern:?}");
+        }
+    }
+
+    #[test]
     fn test_like_wide_character() {
         let cases = vec![
             (
