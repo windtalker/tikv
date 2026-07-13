@@ -4,19 +4,6 @@ use std::str;
 
 use super::*;
 
-#[inline]
-fn is_utf8_continuation(byte: u8) -> bool {
-    matches!(byte, 0x80..=0xBF)
-}
-
-#[inline]
-fn decoded_utf8_char(code: u32, len: usize) -> Option<(char, usize)> {
-    // SAFETY: Callers pass only code points decoded from validated UTF-8
-    // byte sequences, excluding overlong encodings, surrogates, and values
-    // above U+10FFFF.
-    Some((unsafe { std::char::from_u32_unchecked(code) }, len))
-}
-
 pub struct CharsetBinary;
 
 impl Charset for CharsetBinary {
@@ -59,131 +46,19 @@ impl Charset for CharsetUtf8mb4 {
             return Some((first as char, 1));
         }
 
-        let invalid = Some((std::char::REPLACEMENT_CHARACTER, 1));
-        match first {
-            0xC2..=0xDF => {
-                let Some(&b1) = data.get(1) else {
-                    return invalid;
-                };
-                if !is_utf8_continuation(b1) {
-                    return invalid;
+        for len in 2..=4 {
+            if let Some(prefix) = data.get(..len) {
+                if let Ok(s) = str::from_utf8(prefix) {
+                    let mut chars = s.chars();
+                    if let Some(ch) = chars.next() {
+                        if chars.next().is_none() {
+                            return Some((ch, len));
+                        }
+                    }
                 }
-                let code = (u32::from(first & 0x1F) << 6) | u32::from(b1 & 0x3F);
-                decoded_utf8_char(code, 2)
             }
-            0xE0 => {
-                let Some(&b1) = data.get(1) else {
-                    return invalid;
-                };
-                let Some(&b2) = data.get(2) else {
-                    return invalid;
-                };
-                if !matches!(b1, 0xA0..=0xBF) || !is_utf8_continuation(b2) {
-                    return invalid;
-                }
-                let code = (u32::from(first & 0x0F) << 12)
-                    | (u32::from(b1 & 0x3F) << 6)
-                    | u32::from(b2 & 0x3F);
-                decoded_utf8_char(code, 3)
-            }
-            0xE1..=0xEC | 0xEE..=0xEF => {
-                let Some(&b1) = data.get(1) else {
-                    return invalid;
-                };
-                let Some(&b2) = data.get(2) else {
-                    return invalid;
-                };
-                if !is_utf8_continuation(b1) || !is_utf8_continuation(b2) {
-                    return invalid;
-                }
-                let code = (u32::from(first & 0x0F) << 12)
-                    | (u32::from(b1 & 0x3F) << 6)
-                    | u32::from(b2 & 0x3F);
-                decoded_utf8_char(code, 3)
-            }
-            0xED => {
-                let Some(&b1) = data.get(1) else {
-                    return invalid;
-                };
-                let Some(&b2) = data.get(2) else {
-                    return invalid;
-                };
-                if !matches!(b1, 0x80..=0x9F) || !is_utf8_continuation(b2) {
-                    return invalid;
-                }
-                let code = (u32::from(first & 0x0F) << 12)
-                    | (u32::from(b1 & 0x3F) << 6)
-                    | u32::from(b2 & 0x3F);
-                decoded_utf8_char(code, 3)
-            }
-            0xF0 => {
-                let Some(&b1) = data.get(1) else {
-                    return invalid;
-                };
-                let Some(&b2) = data.get(2) else {
-                    return invalid;
-                };
-                let Some(&b3) = data.get(3) else {
-                    return invalid;
-                };
-                if !matches!(b1, 0x90..=0xBF)
-                    || !is_utf8_continuation(b2)
-                    || !is_utf8_continuation(b3)
-                {
-                    return invalid;
-                }
-                let code = (u32::from(first & 0x07) << 18)
-                    | (u32::from(b1 & 0x3F) << 12)
-                    | (u32::from(b2 & 0x3F) << 6)
-                    | u32::from(b3 & 0x3F);
-                decoded_utf8_char(code, 4)
-            }
-            0xF1..=0xF3 => {
-                let Some(&b1) = data.get(1) else {
-                    return invalid;
-                };
-                let Some(&b2) = data.get(2) else {
-                    return invalid;
-                };
-                let Some(&b3) = data.get(3) else {
-                    return invalid;
-                };
-                if !is_utf8_continuation(b1)
-                    || !is_utf8_continuation(b2)
-                    || !is_utf8_continuation(b3)
-                {
-                    return invalid;
-                }
-                let code = (u32::from(first & 0x07) << 18)
-                    | (u32::from(b1 & 0x3F) << 12)
-                    | (u32::from(b2 & 0x3F) << 6)
-                    | u32::from(b3 & 0x3F);
-                decoded_utf8_char(code, 4)
-            }
-            0xF4 => {
-                let Some(&b1) = data.get(1) else {
-                    return invalid;
-                };
-                let Some(&b2) = data.get(2) else {
-                    return invalid;
-                };
-                let Some(&b3) = data.get(3) else {
-                    return invalid;
-                };
-                if !matches!(b1, 0x80..=0x8F)
-                    || !is_utf8_continuation(b2)
-                    || !is_utf8_continuation(b3)
-                {
-                    return invalid;
-                }
-                let code = (u32::from(first & 0x07) << 18)
-                    | (u32::from(b1 & 0x3F) << 12)
-                    | (u32::from(b2 & 0x3F) << 6)
-                    | u32::from(b3 & 0x3F);
-                decoded_utf8_char(code, 4)
-            }
-            _ => return Some((std::char::REPLACEMENT_CHARACTER, 1)),
         }
+        Some((std::char::REPLACEMENT_CHARACTER, 1))
     }
 
     fn charset() -> crate::Charset {
